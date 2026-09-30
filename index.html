@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>A-96 Headquarters</title>
+<meta name="theme-color" content="#000000">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black">
+<meta name="apple-mobile-web-app-title" content="A-96 HQ">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" type="image/png" sizes="32x32" href="icons/favicon-32.png">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+  body { display: flex; flex-direction: column; padding-top: env(safe-area-inset-top, 0px); }
+  #app { flex: 1; width: 100%; border: 0; display: block; background: #000; }
+  #splash { position: fixed; inset: 0; z-index: 2; background: #000; display: grid; place-items: center; transition: opacity .35s ease; }
+  #splash.gone { opacity: 0; pointer-events: none; }
+  #splash img { display: block; width: 64px; height: auto; margin: 0 auto; }
+  .bar { width: 120px; height: 3px; margin: 30px auto 0; background: #222; border-radius: 3px; overflow: hidden; }
+  .bar i { display: block; width: 40%; height: 100%; background: #EA0B1B; animation: slide 1.1s ease-in-out infinite; }
+  @keyframes slide { from { transform: translateX(-100%); } to { transform: translateX(250%); } }
+  #msg { min-height: 20px; margin-top: 18px; padding: 0 28px; color: #A3A8B3; font: 14px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; text-align: center; }
+  #msg button { margin-top: 12px; padding: 8px 18px; border: 0; border-radius: 10px; background: #EA0B1B; color: #fff; font: 600 14px system-ui, sans-serif; }
+  @media (prefers-reduced-motion: reduce) { .bar i { animation: none; width: 100%; } }
+</style>
+</head>
+<body>
+<div id="splash">
+  <div>
+    <img src="icons/logo-mark.svg" alt="A-96">
+    <div class="bar"><i></i></div>
+    <div id="msg"></div>
+  </div>
+</div>
+<iframe id="app" title="A-96 Headquarters" allow="clipboard-write"></iframe>
+
+<script>
+  // ▼▼▼ Paste your Apps Script web app URL (the one ending in /exec) ▼▼▼
+  const APP_URL = 'https://script.google.com/macros/s/AKfycbycJqqfW2NS3puUObrmNYvj8QwOVRZYoN1mxasbi16OBAFBrJweFMM4LELSrtQBSAzwQQ/exec';
+  // ▲▲▲
+
+  const frame = document.getElementById('app');
+  const splash = document.getElementById('splash');
+  const msg = document.getElementById('msg');
+  let slowTimer;
+
+  function show(text, withRetry) {
+    msg.innerHTML = '';
+    msg.appendChild(document.createTextNode(text));
+    if (withRetry) {
+      const b = document.createElement('button');
+      b.textContent = 'Try again';
+      b.onclick = start;
+      msg.appendChild(document.createElement('br'));
+      msg.appendChild(b);
+    }
+  }
+
+  function start() {
+    splash.classList.remove('gone');
+    show('');
+    if (!/^https:\/\/script\.google\.com\/.+\/exec/.test(APP_URL)) {
+      show('This app isn\u2019t connected yet. Paste the web app URL into APP_URL in index.html.');
+      return;
+    }
+    if (!navigator.onLine) { show('No internet connection.', true); return; }
+    // Pass through deep links such as ?d=sales (used by the home screen shortcut)
+    const d = new URLSearchParams(location.search).get('d');
+    frame.src = APP_URL + (d ? '?d=' + encodeURIComponent(d) : '');
+    clearTimeout(slowTimer);
+    slowTimer = setTimeout(() => show('Still loading. This can take a few seconds the first time.'), 9000);
+  }
+
+  frame.addEventListener('load', () => {
+    if (!frame.src) return;
+    clearTimeout(slowTimer);
+    setTimeout(() => splash.classList.add('gone'), 250);
+  });
+  window.addEventListener('online', () => { if (!frame.src) start(); });
+
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => {}));
+  }
+  start();
+</script>
+</body>
+</html>
