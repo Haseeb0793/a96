@@ -1,7 +1,7 @@
 {
   "id": "./",
   "name": "A-96 Operations",
-  "short_name": "A-96 HQ",
+  "short_name": "A-96 Ops",
   "description": "A-96 sales and operations dashboards.",
   "start_url": "./",
   "scope": "./",
