@@ -38,7 +38,7 @@
 
 <script>
   // ▼▼▼ Paste your Apps Script web app URL (the one ending in /exec) ▼▼▼
-  const APP_URL = 'https://script.google.com/macros/s/AKfycbwtUiQJ-TBykK8VISdGTbYgpHCPssZhSUSVWh9NKnm8j3LEU_iIDH2XOYYp8O4OG8OoxQ/exec';
+  const APP_URL = 'PASTE_YOUR_EXEC_URL_HERE';
   // ▲▲▲
 
   // The app's screens are kept on this device and shown instantly; the server is only asked for data.
@@ -88,23 +88,117 @@
       requestAnimationFrame(() => splash.classList.add('gone'));
     }
 
+    // Emergency reset: open https://haseeb0793.github.io/a96/?reset to wipe everything this app saved on the
+    // device (screens, data, offline copy) and start fresh. Signing in again is needed afterwards.
+    if (/[?&]reset\b/.test(location.search)) {
+      show('Resetting the app on this device…');
+      const done = () => location.replace(location.pathname);
+      Promise.all([
+        new Promise(res => { try { const r = indexedDB.deleteDatabase('a96'); r.onsuccess = r.onerror = r.onblocked = () => res(); } catch (e) { res(); } }),
+        (window.caches ? caches.keys().then(ks => Promise.all(ks.map(k => caches.delete(k)))) : Promise.resolve()).catch(() => {}),
+        (navigator.serviceWorker ? navigator.serviceWorker.getRegistrations().then(rs => Promise.all(rs.map(r => r.unregister()))) : Promise.resolve()).catch(() => {}),
+      ]).then(() => { try { Object.keys(localStorage).filter(k => /^(a96|mother)\./.test(k)).forEach(k => localStorage.removeItem(k)); } catch (e) {} setTimeout(done, 300); });
+      return;
+    }
     if (!/^https:\/\/script\.google\.com\/.+\/exec$/.test(window.A96_API)) {
       show('This app isn’t connected yet. Paste the web app URL into APP_URL in index.html.');
       return;
     }
+    // Updates are picked up straight away:
+    //  • a different APP_URL (new deployment) → the screens saved on this device are dropped and fetched fresh;
+    //  • a new version on the server → it is saved, and the app reloads into it if you haven't started using
+    //    it yet (otherwise a small "Update ready" bar appears).
+    let touched = false;
+    ['pointerdown', 'keydown', 'touchstart'].forEach(ev => window.addEventListener(ev, () => { touched = true; }, { once: true, capture: true }));
+    function clearAll() {
+      return db().then(d => new Promise(res => { if (!d) return res(); try { const t = d.transaction('kv', 'readwrite'); t.objectStore('kv').clear(); t.oncomplete = res; t.onerror = res; } catch (e) { res(); } }));
+    }
+    function updateBar() {
+      if (document.getElementById('a96-update')) return;
+      const b = document.createElement('button');
+      b.id = 'a96-update';
+      b.textContent = 'A new version of the app is ready. Tap to update.';
+      b.style.cssText = 'position:fixed;left:12px;right:12px;bottom:calc(14px + env(safe-area-inset-bottom,0px));z-index:400;padding:14px 16px;border:0;border-radius:12px;background:#EA0B1B;color:#fff;font:600 14px system-ui,-apple-system,sans-serif;box-shadow:0 6px 24px rgba(0,0,0,.35)';
+      b.onclick = () => location.reload();
+      document.body.appendChild(b);
+    }
+    function fresh() {
+      const slow = setTimeout(() => show('Setting up the app on this device. This only happens once after each update.'), 4000);
+      api('getShell').then(s => { clearTimeout(slow); s.url = window.A96_API; kvSet('shell', s); mount(s.html); })
+        .catch(() => { clearTimeout(slow); show(navigator.onLine ? 'Couldn’t reach the A-96 server. Check that the web app is deployed with access "Anyone".' : 'No internet connection.', true); });
+    }
     kvGet('shell').then(cached => {
-      if (cached && cached.html) {
+      if (cached && cached.html && cached.url === window.A96_API) {
         mount(cached.html);
-        // Check for a newer version in the background; it is used from the next open.
-        setTimeout(() => api('getShell').then(s => { if (s && s.version !== cached.version) kvSet('shell', s); }).catch(() => {}), 1500);
+        setTimeout(() => api('getShell').then(s => {
+          if (!s || s.version === cached.version) return;
+          s.url = window.A96_API;
+          return kvSet('shell', s).then(() => { if (!touched) location.reload(); else updateBar(); });
+        }).catch(() => {}), 800);
         return;
       }
-      const slow = setTimeout(() => show('Setting up the app on this device. This only happens once.'), 4000);
-      api('getShell').then(s => { clearTimeout(slow); kvSet('shell', s); mount(s.html); })
-        .catch(() => { clearTimeout(slow); show(navigator.onLine ? 'Couldn’t reach the A-96 server. Check that the web app is deployed with access "Anyone".' : 'No internet connection.', true); });
+      // First open, or the web app URL changed: start clean so nothing from the old version is shown.
+      (cached ? clearAll() : Promise.resolve()).then(fresh);
     });
 
-    if ('serviceWorker' in navigator) window.addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => {}));
+    // Offline copy + phone alerts share one service worker (sw.js). Once phone alerts are set up, OneSignal registers it
+    // (with its own settings in the link), so it isn't registered a second time here.
+    if ('serviceWorker' in navigator) window.addEventListener('load', () => {
+      let pushApp = ''; try { pushApp = localStorage.getItem('a96.pushApp') || ''; } catch (e) {}
+      if (pushApp) return window.A96_PUSH.setup(pushApp);
+      navigator.serviceWorker.getRegistration().then(r => {
+        const w = r && (r.active || r.waiting || r.installing);
+        if (w && /sw\.js\?/.test(w.scriptURL)) return;
+        return navigator.serviceWorker.register('sw.js');
+      }).catch(() => {});
+    });
+  })();
+
+  // Phone and desktop alerts (OneSignal). The app calls A96_PUSH.setup(appId, username) after sign-in;
+  // A96_PUSH.enable() must run straight from a tap (phones only show the permission question after a tap).
+  window.A96_PUSH = (function () {
+    const SDK = 'https://cdn.onesignal.com/sdks/web/v16/OneSignalSDK.page.js';
+    const dir = location.pathname.replace(/[^/]*$/, '');            // e.g. /a96/
+    const ios = /iP(hone|ad|od)/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+    const standalone = window.navigator.standalone === true || (window.matchMedia && matchMedia('(display-mode: standalone)').matches);
+    let ready = null, OS = null, appId = '', user = '';
+    function load(id) {
+      if (ready) return ready;
+      appId = id;
+      try { localStorage.setItem('a96.pushApp', id); } catch (e) {}
+      ready = new Promise((res, rej) => {
+        window.OneSignalDeferred = window.OneSignalDeferred || [];
+        const s = document.createElement('script'); s.src = SDK; s.defer = true; s.onerror = () => rej(new Error('PUSH_SDK'));
+        document.head.appendChild(s);
+        window.OneSignalDeferred.push(function (OneSignal) {
+          OneSignal.init({ appId: id, serviceWorkerPath: dir.slice(1) + 'sw.js', serviceWorkerParam: { scope: dir } })
+            .then(() => { OS = OneSignal; res(OneSignal); }, rej);
+        });
+      });
+      ready.catch(() => {});
+      return ready;
+    }
+    function status() {
+      if (!('Notification' in window) || !('serviceWorker' in navigator)) return ios && !standalone ? 'ios-browser' : 'unsupported';
+      if (!OS) return 'loading';
+      if (Notification.permission === 'denied') return 'denied';
+      return Notification.permission === 'granted' && OS.User.PushSubscription.optedIn ? 'on' : 'off';
+    }
+    return {
+      status: status,
+      setup(id, username) {
+        if (!id || (appId && id !== appId)) { if (id && appId && id !== appId) { try { localStorage.setItem('a96.pushApp', id); } catch (e) {} } return Promise.resolve(status()); }
+        return load(id).then(O => { if (username && username !== user) { user = username; return O.login(username); } })
+          .then(status, () => 'unsupported');
+      },
+      enable() {
+        if (!OS) return Promise.resolve(status());
+        const p = Notification.permission === 'granted' ? Promise.resolve() : OS.Notifications.requestPermission();
+        return Promise.resolve(p).then(() => (Notification.permission === 'granted' && !OS.User.PushSubscription.optedIn) ? OS.User.PushSubscription.optIn() : null)
+          .then(status, status);
+      },
+      logout() { user = ''; if (OS) { try { return Promise.resolve(OS.logout()).catch(() => {}); } catch (e) {} } return Promise.resolve(); },
+    };
   })();
 </script>
 </body>
